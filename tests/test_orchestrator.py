@@ -8,6 +8,7 @@ import time
 import unittest
 
 from hotmodel.config import ModelSpec, RouterSpec, RuntimeConfig
+from hotmodel.gpu import GpuMemorySnapshot
 from hotmodel.orchestrator import Orchestrator
 from hotmodel.session import SessionStore
 
@@ -97,6 +98,21 @@ class FakeRouter:
         self.events.append(f"unload:{model.llama_model_id}")
 
 
+class FakeGpuProbe:
+    def __init__(self, values: list[int | None]) -> None:
+        self.values = values
+        self.index = 0
+
+    def snapshot(self) -> GpuMemorySnapshot:
+        value = self.values[min(self.index, len(self.values) - 1)]
+        self.index += 1
+        per_gpu = [value] if value is not None else None
+        return GpuMemorySnapshot(total_mb=value, per_gpu_mb=per_gpu, captured_at=float(self.index))
+
+    def wait_until_below(self, threshold_mb: int, timeout_seconds: float) -> bool:
+        return True
+
+
 class OrchestratorTests(unittest.TestCase):
     def test_switch_stops_previous_before_starting_next(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -115,6 +131,24 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(FakeProcess.events, ["start:small", "stop:small", "start:tiny"])
             self.assertEqual(orchestrator.state()["active_model"], "tiny")
             self.assertIs(orchestrator.state()["process_running"], True)
+
+    def test_switch_report_includes_gpu_memory_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            orchestrator = Orchestrator(
+                _config(tmp_path),
+                sessions=SessionStore(tmp_path / "state.json", "preset"),
+                process_factory=lambda model: FakeProcess(model),
+                chat_backend_factory=lambda base_url: FakeChatBackend(base_url),
+                gpu_probe=FakeGpuProbe([900, 100, 80, 700]),
+            )
+
+            report = orchestrator.switch_model("small")
+
+            self.assertEqual(report.gpu_memory["before_unload"]["total_mb"], 900)
+            self.assertEqual(report.gpu_memory["after_unload"]["total_mb"], 100)
+            self.assertEqual(report.gpu_memory["after_settle"]["total_mb"], 80)
+            self.assertEqual(report.gpu_memory["after_load"]["total_mb"], 700)
 
     def test_context_and_preset_survive_model_switch(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

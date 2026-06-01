@@ -74,6 +74,7 @@ def create_app(config: RuntimeConfig):
             "active_model": report.active_model,
             "elapsed_seconds": report.elapsed_seconds,
             "gpu_settled": report.gpu_settled,
+            "gpu_memory": report.gpu_memory,
         }
 
     @app.post("/v1/chat/completions")
