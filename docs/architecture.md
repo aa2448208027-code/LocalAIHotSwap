@@ -77,6 +77,19 @@ If the target model fails to load, the switch reports an error. When a previous
 model existed, the orchestrator attempts to load it again. Because
 `zero_overlap` keeps only one model loaded, rollback also pays load latency.
 
+## Telemetry
+
+Switch reports include GPU memory snapshots for these phases:
+
+- `before_unload`;
+- `after_unload`;
+- `after_settle`;
+- `after_load`.
+
+Each snapshot reports total used memory and per-GPU used memory when
+`nvidia-smi` is available. Missing GPU tooling produces `null` values and does
+not block switching.
+
 ## Compatibility mode
 
 The code also supports `backend_mode = "process"` for older `llama-server`

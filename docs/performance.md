@@ -19,6 +19,10 @@ Further reductions come from:
 - quantized KV cache via `cache_type_k` and `cache_type_v`;
 - keeping model autoload disabled so the proxy controls lifecycle.
 
+The switch report includes `before_unload`, `after_unload`, `after_settle`, and
+`after_load` GPU memory snapshots. Use those values to confirm whether a config
+change actually lowers peak memory or only shifts memory between phases.
+
 ## Prefill Cost After Switch
 
 Cross-model KV cache reuse is not a safe general mechanism. The proxy therefore
@@ -85,7 +89,7 @@ Keep these as separate PRs:
 - optional waiting queue for switch requests;
 - log-file rotation and process diagnostics;
 - real `llama-server` smoke tests gated by environment variables;
-- GPU telemetry snapshots before unload, after unload, and after load;
+- GPU telemetry export to Prometheus-compatible metrics;
 - model compatibility profiles for Qwen, Gemma, Llama, and multimodal variants.
 
 ## Sources

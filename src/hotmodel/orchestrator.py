@@ -24,6 +24,7 @@ class SwitchReport:
     active_model: str
     elapsed_seconds: float
     gpu_settled: bool | None
+    gpu_memory: dict[str, dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ class Orchestrator:
                     active_model=target_model,
                     elapsed_seconds=0,
                     gpu_settled=None,
+                    gpu_memory={},
                 )
             if self._switching:
                 raise RuntimeError("model switch in progress")
@@ -114,8 +116,10 @@ class Orchestrator:
             self._condition.notify_all()
 
         gpu_settled: bool | None = None
+        gpu_memory: dict[str, dict[str, object]] = {}
         next_process: ManagedBackend | None = None
         try:
+            gpu_memory["before_unload"] = self._gpu_probe.snapshot().as_dict()
             if self._router is not None:
                 self._router.start()
                 if previous_model is not None:
@@ -124,13 +128,16 @@ class Orchestrator:
                 if previous_process is not None:
                     previous_process.stop()
 
+            gpu_memory["after_unload"] = self._gpu_probe.snapshot().as_dict()
             gpu_settled = self._wait_for_gpu_settle()
+            gpu_memory["after_settle"] = self._gpu_probe.snapshot().as_dict()
             target = self.config.models[target_model]
             if self._router is not None:
                 self._router.load_model(target)
             else:
                 next_process = self._process_factory(target)
                 next_process.start()
+            gpu_memory["after_load"] = self._gpu_probe.snapshot().as_dict()
         except Exception:
             self._rollback_switch(previous_model)
             raise
@@ -147,6 +154,7 @@ class Orchestrator:
             active_model=target_model,
             elapsed_seconds=time.monotonic() - started_at,
             gpu_settled=gpu_settled,
+            gpu_memory=gpu_memory,
         )
 
     def stop(self) -> None:

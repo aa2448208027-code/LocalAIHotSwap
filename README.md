@@ -88,6 +88,9 @@ The most important performance knobs are:
   calls tokenizer endpoints only when the estimate indicates trimming is needed.
 - `server.switch_drain_timeout_seconds`: waits for active generations to finish
   before unloading the current model.
+- `/admin/switch` returns GPU memory snapshots for `before_unload`,
+  `after_unload`, `after_settle`, and `after_load` when `nvidia-smi` is
+  available.
 
 ## Architecture
 
