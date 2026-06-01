@@ -55,6 +55,12 @@ class FakeChatBackend:
             ],
         }
 
+    def chat_completions_stream(self, payload: dict[str, Any], timeout_seconds: float = 600):
+        FakeChatBackend.calls.append({"base_url": self.base_url, "payload": payload})
+        yield b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
+        yield b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
     def count_chat_tokens(self, model: str, messages: list[dict[str, Any]]) -> int:
         FakeChatBackend.token_counts.append({"model": model, "messages": messages})
         return sum(len(str(message.get("content", ""))) for message in messages)
@@ -253,6 +259,52 @@ class OrchestratorTests(unittest.TestCase):
 
             self.assertEqual(FakeChatBackend.token_counts, [])
             self.assertEqual(response["hotmodel"]["prompt_budget"]["unit"], "estimated_tokens")
+
+    def test_streaming_chat_tracks_inflight_and_persists_completed_response(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            FakeChatBackend.calls = []
+            orchestrator = Orchestrator(
+                _config(tmp_path),
+                sessions=SessionStore(tmp_path / "state.json", "preset"),
+                process_factory=lambda model: FakeProcess(model),
+                chat_backend_factory=lambda base_url: FakeChatBackend(base_url),
+            )
+            orchestrator.switch_model("small")
+
+            stream = orchestrator.chat_stream("s", [{"role": "user", "content": "hi"}], {"stream": True})
+            self.assertEqual(orchestrator.state()["inflight_chats"], 1)
+            lines = list(stream)
+
+            self.assertEqual(lines[-1], b"data: [DONE]\n\n")
+            self.assertEqual(orchestrator.state()["inflight_chats"], 0)
+            session = orchestrator.sessions.get_or_create("s")
+            self.assertEqual(
+                session.messages,
+                [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                ],
+            )
+            self.assertIs(FakeChatBackend.calls[-1]["payload"]["stream"], True)
+
+    def test_cancelled_stream_releases_inflight_without_partial_history(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            orchestrator = Orchestrator(
+                _config(tmp_path),
+                sessions=SessionStore(tmp_path / "state.json", "preset"),
+                process_factory=lambda model: FakeProcess(model),
+                chat_backend_factory=lambda base_url: FakeChatBackend(base_url),
+            )
+            orchestrator.switch_model("small")
+
+            stream = orchestrator.chat_stream("s", [{"role": "user", "content": "hi"}], {"stream": True})
+            next(stream)
+            stream.close()
+
+            self.assertEqual(orchestrator.state()["inflight_chats"], 0)
+            self.assertEqual(orchestrator.sessions.get_or_create("s").messages, [])
 
     def test_repeated_router_switch_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

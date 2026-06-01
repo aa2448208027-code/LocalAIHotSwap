@@ -17,6 +17,8 @@ weights and replaying the saved prompt/messages into the new model.
 - Active generations are drained before a switch unloads the current model.
 - Long sessions can be bounded by message count and prompt character budget.
 - Clients can keep using an OpenAI-compatible `/v1/chat/completions` endpoint.
+- Streaming chat completions are forwarded as server-sent events when clients set
+  `stream = true`.
 - Switches are serialized with a lock so chat requests cannot race the process
   lifecycle.
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Condition, RLock
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+import json
 import time
 
 from .backend import LlamaHttpBackend
@@ -23,6 +24,16 @@ class SwitchReport:
     active_model: str
     elapsed_seconds: float
     gpu_settled: bool | None
+
+
+@dataclass(frozen=True)
+class PreparedChat:
+    active: ModelSpec
+    session_id: str
+    incoming: list[Message]
+    payload: dict[str, Any]
+    backend_base_url: str
+    budget: BudgetResult
 
 
 class Orchestrator:
@@ -149,45 +160,58 @@ class Orchestrator:
             self._switching = False
 
     def chat(self, session_id: str | None, incoming: list[Message], params: dict[str, Any]) -> dict[str, Any]:
-        with self._condition:
-            if self._switching:
-                raise RuntimeError("model switch in progress")
-            if self._active_model is None:
-                raise RuntimeError("no active model")
-            active = self.config.models[self._active_model]
-            resolved_session = self.sessions.get_or_create(session_id)
-            messages = self.sessions.build_prompt_messages(resolved_session.session_id, incoming)
-            payload = dict(params)
-            payload["model"] = active.llama_model_id
-            backend_base_url = self._backend_base_url(active)
-            self._inflight_chats += 1
-
+        prepared = self._prepare_chat(session_id, incoming, params)
         try:
-            backend = self._chat_backend_factory(backend_base_url)
-            budget = self._apply_token_budget(backend, active, messages, incoming_count=len(_without_system(incoming)))
-            payload["messages"] = budget.messages
-            response = backend.chat_completions(payload)
+            backend = self._chat_backend_factory(prepared.backend_base_url)
+            response = backend.chat_completions(prepared.payload)
 
             assistant_message = _extract_assistant_message(response)
-            stored_messages = [message for message in incoming if message.get("role") != "system"]
+            stored_messages = [message for message in prepared.incoming if message.get("role") != "system"]
             if assistant_message is not None:
                 stored_messages.append(assistant_message)
             if stored_messages:
-                self.sessions.append_messages(resolved_session.session_id, stored_messages)
+                self.sessions.append_messages(prepared.session_id, stored_messages)
             response.setdefault("hotmodel", {})
-            response["hotmodel"]["session_id"] = resolved_session.session_id
-            response["hotmodel"]["active_model"] = active.name
-            response["hotmodel"]["prompt_messages"] = len(budget.messages)
+            response["hotmodel"]["session_id"] = prepared.session_id
+            response["hotmodel"]["active_model"] = prepared.active.name
+            response["hotmodel"]["prompt_messages"] = len(prepared.budget.messages)
             response["hotmodel"]["prompt_budget"] = {
-                "cost": budget.cost,
-                "unit": budget.unit,
-                "dropped_messages": budget.dropped_messages,
+                "cost": prepared.budget.cost,
+                "unit": prepared.budget.unit,
+                "dropped_messages": prepared.budget.dropped_messages,
             }
             return response
         finally:
-            with self._condition:
-                self._inflight_chats -= 1
-                self._condition.notify_all()
+            self._finish_chat()
+
+    def chat_stream(self, session_id: str | None, incoming: list[Message], params: dict[str, Any]) -> Iterator[bytes]:
+        payload = dict(params)
+        payload["stream"] = True
+        prepared = self._prepare_chat(session_id, incoming, payload)
+
+        def _stream() -> Iterator[bytes]:
+            content_parts: list[str] = []
+            completed = False
+            try:
+                backend = self._chat_backend_factory(prepared.backend_base_url)
+                for line in backend.chat_completions_stream(prepared.payload):
+                    content = _extract_stream_content(line)
+                    if content:
+                        content_parts.append(content)
+                    if _is_done_stream_line(line):
+                        completed = True
+                    yield line
+                completed = True
+            finally:
+                if completed:
+                    stored_messages = [message for message in prepared.incoming if message.get("role") != "system"]
+                    if content_parts:
+                        stored_messages.append({"role": "assistant", "content": "".join(content_parts)})
+                    if stored_messages:
+                        self.sessions.append_messages(prepared.session_id, stored_messages)
+                self._finish_chat()
+
+        return _stream()
 
     def state(self) -> dict[str, Any]:
         with self._lock:
@@ -212,6 +236,46 @@ class Orchestrator:
         if self._router is not None:
             return self._router.base_url
         return active.base_url
+
+    def _prepare_chat(
+        self,
+        session_id: str | None,
+        incoming: list[Message],
+        params: dict[str, Any],
+    ) -> PreparedChat:
+        with self._condition:
+            if self._switching:
+                raise RuntimeError("model switch in progress")
+            if self._active_model is None:
+                raise RuntimeError("no active model")
+            active = self.config.models[self._active_model]
+            resolved_session = self.sessions.get_or_create(session_id)
+            messages = self.sessions.build_prompt_messages(resolved_session.session_id, incoming)
+            payload = dict(params)
+            payload["model"] = active.llama_model_id
+            backend_base_url = self._backend_base_url(active)
+            self._inflight_chats += 1
+
+        try:
+            backend = self._chat_backend_factory(backend_base_url)
+            budget = self._apply_token_budget(backend, active, messages, incoming_count=len(_without_system(incoming)))
+            payload["messages"] = budget.messages
+            return PreparedChat(
+                active=active,
+                session_id=resolved_session.session_id,
+                incoming=[dict(message) for message in incoming],
+                payload=payload,
+                backend_base_url=backend_base_url,
+                budget=budget,
+            )
+        except Exception:
+            self._finish_chat()
+            raise
+
+    def _finish_chat(self) -> None:
+        with self._condition:
+            self._inflight_chats -= 1
+            self._condition.notify_all()
 
     def _apply_token_budget(
         self,
@@ -315,3 +379,37 @@ def _extract_assistant_message(response: dict[str, Any]) -> Message | None:
 
 def _without_system(messages: list[Message]) -> list[Message]:
     return [message for message in messages if message.get("role") != "system"]
+
+
+def _extract_stream_content(line: bytes) -> str | None:
+    data = _stream_data(line)
+    if data is None or data == "[DONE]":
+        return None
+    try:
+        item = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    choices = item.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    delta = first.get("delta")
+    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+        return delta["content"]
+    message = first.get("message")
+    if isinstance(message, dict) and isinstance(message.get("content"), str):
+        return message["content"]
+    return None
+
+
+def _is_done_stream_line(line: bytes) -> bool:
+    return _stream_data(line) == "[DONE]"
+
+
+def _stream_data(line: bytes) -> str | None:
+    text = line.decode("utf-8", errors="replace").strip()
+    if not text.startswith("data:"):
+        return None
+    return text.removeprefix("data:").strip()

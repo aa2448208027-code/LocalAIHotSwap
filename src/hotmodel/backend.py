@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 import json
 import urllib.parse
 import urllib.error
@@ -25,6 +25,33 @@ def post_json(base_url: str, path: str, payload: dict[str, Any], timeout_seconds
         raise RuntimeError(f"llama-server request failed: {exc}") from exc
 
 
+def post_json_stream(
+    base_url: str,
+    path: str,
+    payload: dict[str, Any],
+    timeout_seconds: float = 600,
+) -> Iterator[bytes]:
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            for line in response:
+                yield line
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"llama-server returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"llama-server request failed: {exc}") from exc
+
+
 def get_json(base_url: str, path: str, timeout_seconds: float = 30) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(f"{base_url.rstrip('/')}{path}", timeout=timeout_seconds) as response:
@@ -42,6 +69,9 @@ class LlamaHttpBackend:
 
     def chat_completions(self, payload: dict[str, Any], timeout_seconds: float = 600) -> dict[str, Any]:
         return post_json(self.base_url, "/v1/chat/completions", payload, timeout_seconds)
+
+    def chat_completions_stream(self, payload: dict[str, Any], timeout_seconds: float = 600) -> Iterator[bytes]:
+        return post_json_stream(self.base_url, "/v1/chat/completions", payload, timeout_seconds)
 
     def count_chat_tokens(
         self,

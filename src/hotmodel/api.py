@@ -9,6 +9,7 @@ from .orchestrator import Orchestrator
 def create_app(config: RuntimeConfig):
     try:
         from fastapi import FastAPI, Header, HTTPException
+        from fastapi.responses import StreamingResponse
         from pydantic import BaseModel, Field
     except ImportError as exc:
         raise RuntimeError("fastapi and pydantic are required to run the HTTP API") from exc
@@ -76,13 +77,14 @@ def create_app(config: RuntimeConfig):
         }
 
     @app.post("/v1/chat/completions")
-    def chat(request: ChatRequest, x_hotmodel_session: str | None = Header(default=None)) -> dict[str, Any]:
+    def chat(request: ChatRequest, x_hotmodel_session: str | None = Header(default=None)) -> Any:
         payload = request.model_dump(by_alias=True, exclude={"messages", "session_id"})
         payload = {key: value for key, value in payload.items() if value is not None}
-        if payload.get("stream"):
-            raise HTTPException(status_code=400, detail="streaming is not implemented by the proxy")
         session_id = request.session_id or x_hotmodel_session
         try:
+            if payload.get("stream"):
+                stream = orchestrator.chat_stream(session_id, request.messages, payload)
+                return StreamingResponse(stream, media_type="text/event-stream")
             return orchestrator.chat(session_id, request.messages, payload)
         except RuntimeError as exc:
             message = str(exc)
