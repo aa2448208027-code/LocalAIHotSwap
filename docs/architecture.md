@@ -76,3 +76,8 @@ The code also supports `backend_mode = "process"` for older `llama-server`
 builds. In that mode each model has its own server port and a switch stops the
 old process before starting the new process. Router mode has lower orchestration
 cost and tracks current `llama.cpp` model-management APIs.
+
+Switch-time load and unload work is intentionally performed outside the primary
+condition lock. New chat requests can then fail quickly with a switching error
+while the backend is loading a model, instead of blocking behind a long critical
+section.

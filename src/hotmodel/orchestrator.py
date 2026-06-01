@@ -81,6 +81,8 @@ class Orchestrator:
                     elapsed_seconds=0,
                     gpu_settled=None,
                 )
+            if self._switching:
+                raise RuntimeError("model switch in progress")
 
             previous_name = self._active_model
             previous_model = self.config.models.get(previous_name) if previous_name else None
@@ -94,41 +96,35 @@ class Orchestrator:
                 )
 
             self._active_model = None
+            previous_process = self._process
+            if self._router is None:
+                self._process = None
+            self._condition.notify_all()
 
+        gpu_settled: bool | None = None
+        next_process: ManagedBackend | None = None
+        try:
             if self._router is not None:
                 self._router.start()
                 if previous_model is not None:
                     self._router.unload_model(previous_model)
             else:
-                previous_process = self._process
-                self._process = None
                 if previous_process is not None:
                     previous_process.stop()
 
             gpu_settled = self._wait_for_gpu_settle()
             target = self.config.models[target_model]
-            try:
-                if self._router is not None:
-                    self._router.load_model(target)
-                else:
-                    next_process = self._process_factory(target)
-                    next_process.start()
-            except Exception:
-                if previous_model is not None:
-                    if self._router is not None:
-                        self._router.load_model(previous_model)
-                    else:
-                        rollback = self._process_factory(previous_model)
-                        rollback.start()
-                    self._process = rollback
-                    self._active_model = previous_model.name
-                self._switching = False
-                self._condition.notify_all()
-                raise
-
             if self._router is not None:
-                self._process = None
+                self._router.load_model(target)
             else:
+                next_process = self._process_factory(target)
+                next_process.start()
+        except Exception:
+            self._rollback_switch(previous_model)
+            raise
+
+        with self._condition:
+            if self._router is None:
                 self._process = next_process
             self._active_model = target_model
             self._switching = False
@@ -229,6 +225,27 @@ class Orchestrator:
                 return False
             self._condition.wait(timeout=remaining)
         return True
+
+    def _rollback_switch(self, previous_model: ModelSpec | None) -> None:
+        rollback_process: ManagedBackend | None = None
+        rollback_model_name: str | None = None
+        if previous_model is not None:
+            try:
+                if self._router is not None:
+                    self._router.load_model(previous_model)
+                else:
+                    rollback_process = self._process_factory(previous_model)
+                    rollback_process.start()
+                rollback_model_name = previous_model.name
+            except Exception:
+                rollback_process = None
+                rollback_model_name = None
+
+        with self._condition:
+            self._process = rollback_process if self._router is None else None
+            self._active_model = rollback_model_name
+            self._switching = False
+            self._condition.notify_all()
 
 
 def _extract_assistant_message(response: dict[str, Any]) -> Message | None:

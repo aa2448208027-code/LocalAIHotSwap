@@ -87,3 +87,6 @@ The most important performance knobs are:
 
 See [docs/architecture.md](docs/architecture.md) for the lifecycle model,
 latency tradeoffs, and operational notes.
+
+See [docs/performance.md](docs/performance.md) for the current performance
+review, compatibility notes, and future branch plan.
