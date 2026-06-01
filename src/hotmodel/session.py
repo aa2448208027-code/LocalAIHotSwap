@@ -8,6 +8,8 @@ import json
 import time
 import uuid
 
+from .budget import CharMeasurer, fit_messages_to_budget
+
 
 Message = dict[str, Any]
 
@@ -97,27 +99,14 @@ class SessionStore:
         return _copy_messages(messages[-self.max_session_messages :])
 
     def _fit_prompt_messages(self, messages: list[Message], incoming_count: int) -> list[Message]:
-        if self.max_prompt_chars is None:
-            return _copy_messages(messages)
-        incoming_count = max(0, incoming_count)
-        prefix_count = 1 if messages and messages[0].get("role") == "system" else 0
-        prefix = messages[:prefix_count]
-        tail = messages[len(messages) - incoming_count :] if incoming_count else []
-        history = messages[prefix_count : len(messages) - incoming_count if incoming_count else len(messages)]
-
-        budget = self.max_prompt_chars
-        selected: list[Message] = []
-        used = _messages_chars(prefix) + _messages_chars(tail)
-        for message in reversed(history):
-            cost = _message_chars(message)
-            if selected and used + cost > budget:
-                break
-            if not selected and used + cost > budget:
-                break
-            selected.append(message)
-            used += cost
-        selected.reverse()
-        return _copy_messages(prefix + selected + tail)
+        result = fit_messages_to_budget(
+            messages,
+            incoming_count=incoming_count,
+            budget=self.max_prompt_chars,
+            measurer=CharMeasurer(),
+            unit="chars",
+        )
+        return result.messages
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,11 +121,3 @@ def _without_system(messages: list[Message]) -> list[Message]:
 
 def _copy_messages(messages: list[Message]) -> list[Message]:
     return [dict(message) for message in messages]
-
-
-def _messages_chars(messages: list[Message]) -> int:
-    return sum(_message_chars(message) for message in messages)
-
-
-def _message_chars(message: Message) -> int:
-    return len(str(message.get("role", ""))) + len(str(message.get("content", "")))

@@ -68,6 +68,9 @@ class RuntimeConfig:
     system_prompt: str
     max_session_messages: int | None
     max_prompt_chars: int | None
+    max_prompt_tokens: int | None
+    token_budget_mode: str
+    token_budget_chars_per_token: float
     router: RouterSpec | None
     models: dict[str, ModelSpec] = field(default_factory=dict)
 
@@ -121,6 +124,9 @@ def load_config(path: str | Path) -> RuntimeConfig:
         system_prompt=str(preset.get("system_prompt", "")),
         max_session_messages=_optional_int(session.get("max_session_messages")),
         max_prompt_chars=_optional_int(session.get("max_prompt_chars")),
+        max_prompt_tokens=_optional_int(session.get("max_prompt_tokens")),
+        token_budget_mode=str(session.get("token_budget_mode", "auto")),
+        token_budget_chars_per_token=float(session.get("token_budget_chars_per_token", 4.0)),
         router=router,
         models=models,
     )
@@ -182,6 +188,12 @@ def _validate(config: RuntimeConfig) -> None:
         raise ValueError("max_session_messages must be >= 1")
     if config.max_prompt_chars is not None and config.max_prompt_chars < 1:
         raise ValueError("max_prompt_chars must be >= 1")
+    if config.max_prompt_tokens is not None and config.max_prompt_tokens < 1:
+        raise ValueError("max_prompt_tokens must be >= 1")
+    if config.token_budget_mode not in {"auto", "llama", "estimate"}:
+        raise ValueError("token_budget_mode must be 'auto', 'llama', or 'estimate'")
+    if config.token_budget_chars_per_token <= 0:
+        raise ValueError("token_budget_chars_per_token must be > 0")
     if config.router is not None:
         if config.router.models_max != 1:
             raise ValueError("router.models_max must be 1 for zero_overlap switching")

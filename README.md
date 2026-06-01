@@ -80,6 +80,10 @@ The most important performance knobs are:
   with `f16`, with quality and speed tradeoffs to validate on your workload.
 - `session.max_session_messages` and `session.max_prompt_chars`: bound replayed
   context so model switches do not turn into long prefill stalls.
+- `session.max_prompt_tokens`: asks the active `llama-server` to apply the
+  model chat template and tokenize the prompt, then drops older history until the
+  token budget fits. In `auto` mode the proxy starts with a fast estimate and
+  calls tokenizer endpoints only when the estimate indicates trimming is needed.
 - `server.switch_drain_timeout_seconds`: waits for active generations to finish
   before unloading the current model.
 

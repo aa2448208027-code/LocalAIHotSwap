@@ -36,6 +36,7 @@ class FakeProcess:
 
 class FakeChatBackend:
     calls: list[dict[str, Any]] = []
+    token_counts: list[dict[str, Any]] = []
 
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
@@ -53,6 +54,10 @@ class FakeChatBackend:
                 }
             ],
         }
+
+    def count_chat_tokens(self, model: str, messages: list[dict[str, Any]]) -> int:
+        FakeChatBackend.token_counts.append({"model": model, "messages": messages})
+        return sum(len(str(message.get("content", ""))) for message in messages)
 
 
 class FakeRouter:
@@ -200,6 +205,55 @@ class OrchestratorTests(unittest.TestCase):
             release_load.set()
             switch_thread.join(timeout=2)
 
+    def test_token_budget_uses_backend_token_counter(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            FakeChatBackend.calls = []
+            FakeChatBackend.token_counts = []
+            config = _config(tmp_path, max_prompt_tokens=30, token_budget_mode="llama")
+            orchestrator = Orchestrator(
+                config,
+                sessions=SessionStore(tmp_path / "state.json", "preset"),
+                process_factory=lambda model: FakeProcess(model),
+                chat_backend_factory=lambda base_url: FakeChatBackend(base_url),
+            )
+
+            orchestrator.switch_model("small")
+            orchestrator.chat("s", [{"role": "user", "content": "old message that should be dropped"}], {})
+            response = orchestrator.chat("s", [{"role": "user", "content": "new"}], {})
+
+            self.assertGreater(len(FakeChatBackend.token_counts), 0)
+            messages = FakeChatBackend.calls[-1]["payload"]["messages"]
+            self.assertEqual(
+                messages,
+                [
+                    {"role": "system", "content": "preset"},
+                    {"role": "assistant", "content": "from small"},
+                    {"role": "user", "content": "new"},
+                ],
+            )
+            self.assertEqual(response["hotmodel"]["prompt_budget"]["unit"], "llama_tokens")
+            self.assertEqual(response["hotmodel"]["prompt_budget"]["dropped_messages"], 1)
+
+    def test_auto_token_budget_skips_backend_counter_when_estimate_fits(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            FakeChatBackend.calls = []
+            FakeChatBackend.token_counts = []
+            config = _config(tmp_path, max_prompt_tokens=4096, token_budget_mode="auto")
+            orchestrator = Orchestrator(
+                config,
+                sessions=SessionStore(tmp_path / "state.json", "preset"),
+                process_factory=lambda model: FakeProcess(model),
+                chat_backend_factory=lambda base_url: FakeChatBackend(base_url),
+            )
+
+            orchestrator.switch_model("small")
+            response = orchestrator.chat("s", [{"role": "user", "content": "short"}], {})
+
+            self.assertEqual(FakeChatBackend.token_counts, [])
+            self.assertEqual(response["hotmodel"]["prompt_budget"]["unit"], "estimated_tokens")
+
     def test_repeated_router_switch_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp_path = Path(raw)
@@ -264,7 +318,11 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(events, ["chat:start", "chat:end", "unload:router-small"])
 
 
-def _config(tmp_path: Path) -> RuntimeConfig:
+def _config(
+    tmp_path: Path,
+    max_prompt_tokens: int | None = None,
+    token_budget_mode: str = "auto",
+) -> RuntimeConfig:
     return RuntimeConfig(
         host="127.0.0.1",
         port=18080,
@@ -278,6 +336,9 @@ def _config(tmp_path: Path) -> RuntimeConfig:
         system_prompt="preset",
         max_session_messages=None,
         max_prompt_chars=None,
+        max_prompt_tokens=max_prompt_tokens,
+        token_budget_mode=token_budget_mode,
+        token_budget_chars_per_token=4.0,
         router=None,
         models={
             "small": ModelSpec(name="small", path=tmp_path / "small.gguf", port=28080),
@@ -300,6 +361,9 @@ def _router_config(tmp_path: Path) -> RuntimeConfig:
         system_prompt="preset",
         max_session_messages=None,
         max_prompt_chars=None,
+        max_prompt_tokens=None,
+        token_budget_mode="auto",
+        token_budget_chars_per_token=4.0,
         router=RouterSpec(port=28000, models_max=1, models_autoload=False),
         models={
             "small": ModelSpec(

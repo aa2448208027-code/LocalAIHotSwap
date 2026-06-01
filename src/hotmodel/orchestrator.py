@@ -6,6 +6,7 @@ from typing import Any, Callable
 import time
 
 from .backend import LlamaHttpBackend
+from .budget import BudgetResult, EstimatedTokenMeasurer, LlamaTokenMeasurer, fit_messages_to_budget
 from .config import ModelSpec, RuntimeConfig
 from .gpu import GpuMemoryProbe
 from .llama_process import LlamaRouterProcess, LlamaServerProcess, ManagedBackend
@@ -158,12 +159,13 @@ class Orchestrator:
             messages = self.sessions.build_prompt_messages(resolved_session.session_id, incoming)
             payload = dict(params)
             payload["model"] = active.llama_model_id
-            payload["messages"] = messages
             backend_base_url = self._backend_base_url(active)
             self._inflight_chats += 1
 
         try:
             backend = self._chat_backend_factory(backend_base_url)
+            budget = self._apply_token_budget(backend, active, messages, incoming_count=len(_without_system(incoming)))
+            payload["messages"] = budget.messages
             response = backend.chat_completions(payload)
 
             assistant_message = _extract_assistant_message(response)
@@ -175,7 +177,12 @@ class Orchestrator:
             response.setdefault("hotmodel", {})
             response["hotmodel"]["session_id"] = resolved_session.session_id
             response["hotmodel"]["active_model"] = active.name
-            response["hotmodel"]["prompt_messages"] = len(messages)
+            response["hotmodel"]["prompt_messages"] = len(budget.messages)
+            response["hotmodel"]["prompt_budget"] = {
+                "cost": budget.cost,
+                "unit": budget.unit,
+                "dropped_messages": budget.dropped_messages,
+            }
             return response
         finally:
             with self._condition:
@@ -205,6 +212,47 @@ class Orchestrator:
         if self._router is not None:
             return self._router.base_url
         return active.base_url
+
+    def _apply_token_budget(
+        self,
+        backend: LlamaHttpBackend,
+        active: ModelSpec,
+        messages: list[Message],
+        incoming_count: int,
+    ) -> BudgetResult:
+        if self.config.max_prompt_tokens is None:
+            return BudgetResult(messages=messages, cost=len(messages), dropped_messages=0, unit="messages")
+
+        estimator = EstimatedTokenMeasurer(self.config.token_budget_chars_per_token)
+        estimated = fit_messages_to_budget(
+            messages,
+            incoming_count=incoming_count,
+            budget=self.config.max_prompt_tokens,
+            measurer=estimator,
+            unit=estimator.unit,
+        )
+        if self.config.token_budget_mode == "estimate":
+            return estimated
+        if self.config.token_budget_mode == "auto" and estimated.dropped_messages == 0:
+            return estimated
+
+        if self.config.token_budget_mode in {"auto", "llama"}:
+            measurer = LlamaTokenMeasurer(
+                active.llama_model_id,
+                lambda model, items: backend.count_chat_tokens(model, items),
+            )
+            try:
+                return fit_messages_to_budget(
+                    messages,
+                    incoming_count=incoming_count,
+                    budget=self.config.max_prompt_tokens,
+                    measurer=measurer,
+                    unit=measurer.unit,
+                )
+            except RuntimeError:
+                if self.config.token_budget_mode == "llama":
+                    raise
+        return estimated
 
     def _is_target_already_active(self, target_model: str) -> bool:
         if self._active_model != target_model:
@@ -263,3 +311,7 @@ def _extract_assistant_message(response: dict[str, Any]) -> Message | None:
     if role != "assistant" or content is None:
         return None
     return {"role": "assistant", "content": content}
+
+
+def _without_system(messages: list[Message]) -> list[Message]:
+    return [message for message in messages if message.get("role") != "system"]

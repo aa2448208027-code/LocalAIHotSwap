@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 import json
+import urllib.parse
 import urllib.error
 import urllib.request
 
@@ -41,3 +42,50 @@ class LlamaHttpBackend:
 
     def chat_completions(self, payload: dict[str, Any], timeout_seconds: float = 600) -> dict[str, Any]:
         return post_json(self.base_url, "/v1/chat/completions", payload, timeout_seconds)
+
+    def count_chat_tokens(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        timeout_seconds: float = 60,
+    ) -> int:
+        prompt = self.apply_template(model, messages, timeout_seconds=timeout_seconds)
+        tokens = self.tokenize(model, prompt, timeout_seconds=timeout_seconds)
+        return len(tokens)
+
+    def apply_template(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        timeout_seconds: float = 60,
+    ) -> str:
+        payload = {"model": model, "messages": messages}
+        encoded_model = urllib.parse.quote(model, safe="")
+        for path in (f"/apply-template?model={encoded_model}", "/apply-template"):
+            try:
+                data = post_json(self.base_url, path, payload, timeout_seconds)
+                prompt = data.get("prompt")
+                if isinstance(prompt, str):
+                    return prompt
+            except RuntimeError:
+                continue
+        raise RuntimeError("llama-server apply-template request failed")
+
+    def tokenize(self, model: str, content: str, timeout_seconds: float = 60) -> list[Any]:
+        payload = {
+            "model": model,
+            "content": content,
+            "add_special": False,
+            "parse_special": True,
+            "with_pieces": False,
+        }
+        encoded_model = urllib.parse.quote(model, safe="")
+        for path in (f"/tokenize?model={encoded_model}", "/tokenize"):
+            try:
+                data = post_json(self.base_url, path, payload, timeout_seconds)
+                tokens = data.get("tokens")
+                if isinstance(tokens, list):
+                    return tokens
+            except RuntimeError:
+                continue
+        raise RuntimeError("llama-server tokenize request failed")

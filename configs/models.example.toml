@@ -11,6 +11,9 @@ gpu_settle_memory_mb = 256
 [session]
 max_session_messages = 80
 max_prompt_chars = 24000
+max_prompt_tokens = 6144
+token_budget_mode = "auto"
+token_budget_chars_per_token = 4.0
 
 [preset]
 system_prompt = "You are a concise local assistant. Preserve the user's context across model switches."
