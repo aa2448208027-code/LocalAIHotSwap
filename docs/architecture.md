@@ -37,6 +37,9 @@ The proxy stores sessions as message history:
 - A configured preset system prompt is always prepended.
 - Incoming client messages are appended to the session.
 - The assistant response is appended after the backend returns.
+- For streaming responses, the proxy forwards SSE lines while collecting
+  assistant deltas. A completed stream is persisted; a cancelled stream releases
+  the in-flight request without storing a partial assistant message.
 - When the active model changes, the same stored messages are sent to the new
   backend on the next request.
 

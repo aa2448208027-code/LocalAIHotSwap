@@ -51,6 +51,11 @@ The long-running unload/load work happens outside the main condition lock, so
 new requests can quickly fail with a clear `model switch in progress` error
 instead of blocking until the target model finishes loading.
 
+Streaming requests count as in-flight until the SSE iterator completes or the
+client disconnects. Completed streams are written to session history after the
+last chunk. Cancelled streams release the switch drain without storing partial
+assistant output.
+
 ## Subprocess Output Backpressure
 
 `llama-server` can produce enough output to fill an unread pipe. A filled pipe
@@ -76,7 +81,7 @@ while keeping failures explicit.
 Keep these as separate PRs:
 
 - prefix token-count caching for tokenizer-aware budgets;
-- streaming response proxying for OpenAI SDK parity;
+- richer streaming metadata and usage accounting;
 - optional waiting queue for switch requests;
 - log-file rotation and process diagnostics;
 - real `llama-server` smoke tests gated by environment variables;
