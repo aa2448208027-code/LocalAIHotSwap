@@ -41,8 +41,8 @@ class LlamaServerProcess:
         args = self._build_args()
         self.process = subprocess.Popen(
             args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         if not self.wait_ready(self.startup_timeout_seconds):
             self.stop()
@@ -118,8 +118,8 @@ class LlamaRouterProcess:
             return
         self.process = subprocess.Popen(
             self._build_args(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         if not self.wait_ready(self.startup_timeout_seconds):
             self.stop()
@@ -170,11 +170,10 @@ class LlamaRouterProcess:
             for item in data.get("data", []):
                 if item.get("id") != model_id:
                     continue
-                status = item.get("status", {})
-                last_status = status.get("value")
+                last_status = _model_status_value(item)
                 if last_status == expected:
                     return
-                if status.get("failed"):
+                if _model_status_failed(item):
                     raise RuntimeError(f"model '{model_id}' failed while waiting for {expected}")
             time.sleep(0.5)
         raise RuntimeError(f"model '{model_id}' did not reach status '{expected}', last status: {last_status}")
@@ -215,3 +214,31 @@ class LlamaRouterProcess:
             args.append("--no-webui")
         args.extend(self.router.extra_args)
         return args
+
+
+def _model_status_value(item: dict[str, object]) -> str | None:
+    status = item.get("status")
+    if isinstance(status, str):
+        return status.lower()
+    if isinstance(status, dict):
+        value = status.get("value")
+        if isinstance(value, str):
+            return value.lower()
+    loaded = item.get("loaded")
+    if isinstance(loaded, bool):
+        return "loaded" if loaded else "unloaded"
+    return None
+
+
+def _model_status_failed(item: dict[str, object]) -> bool:
+    status = item.get("status")
+    if isinstance(status, dict):
+        failed = status.get("failed")
+        if isinstance(failed, bool):
+            return failed
+        value = status.get("value")
+        if isinstance(value, str) and value.lower() in {"failed", "error"}:
+            return True
+    if isinstance(status, str) and status.lower() in {"failed", "error"}:
+        return True
+    return False

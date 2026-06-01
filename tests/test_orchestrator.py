@@ -56,10 +56,12 @@ class FakeChatBackend:
 
 
 class FakeRouter:
-    def __init__(self) -> None:
+    def __init__(self, release_load: threading.Event | None = None, entered_load: threading.Event | None = None) -> None:
         self.events: list[str] = []
         self.running = False
         self.base_url = "http://127.0.0.1:28000"
+        self.release_load = release_load
+        self.entered_load = entered_load
 
     def start(self) -> None:
         if not self.running:
@@ -75,6 +77,10 @@ class FakeRouter:
 
     def load_model(self, model: ModelSpec) -> None:
         self.events.append(f"load:{model.llama_model_id}")
+        if self.entered_load is not None:
+            self.entered_load.set()
+        if self.release_load is not None:
+            self.release_load.wait(timeout=5)
 
     def unload_model(self, model: ModelSpec) -> None:
         self.events.append(f"unload:{model.llama_model_id}")
@@ -170,6 +176,29 @@ class OrchestratorTests(unittest.TestCase):
             )
             self.assertEqual(FakeChatBackend.calls[-1]["base_url"], router.base_url)
             self.assertEqual(FakeChatBackend.calls[-1]["payload"]["model"], "router-tiny")
+
+    def test_chat_rejects_immediately_while_switch_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            release_load = threading.Event()
+            entered_load = threading.Event()
+            router = FakeRouter(release_load=release_load, entered_load=entered_load)
+            orchestrator = Orchestrator(
+                _router_config(tmp_path),
+                sessions=SessionStore(tmp_path / "state.json", "preset"),
+                chat_backend_factory=lambda base_url: FakeChatBackend(base_url),
+            )
+            orchestrator._router = router
+
+            switch_thread = threading.Thread(target=lambda: orchestrator.switch_model("small"))
+            switch_thread.start()
+            self.assertTrue(entered_load.wait(timeout=2))
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, "model switch in progress"):
+                orchestrator.chat("s", [{"role": "user", "content": "hi"}], {})
+            self.assertLess(time.monotonic() - started, 0.5)
+            release_load.set()
+            switch_thread.join(timeout=2)
 
     def test_repeated_router_switch_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

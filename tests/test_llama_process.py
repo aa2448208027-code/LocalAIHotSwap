@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from hotmodel.config import RouterSpec
-from hotmodel.llama_process import LlamaRouterProcess
+from hotmodel.llama_process import LlamaRouterProcess, _model_status_failed, _model_status_value
 
 
 class LlamaRouterProcessTests(unittest.TestCase):
@@ -44,6 +44,19 @@ class LlamaRouterProcessTests(unittest.TestCase):
         self.assertIn("auto", args)
         self.assertIn("--no-webui", args)
         self.assertIn("--metrics", args)
+
+    def test_model_status_parser_accepts_common_shapes(self) -> None:
+        self.assertEqual(_model_status_value({"status": {"value": "LOADED"}}), "loaded")
+        self.assertEqual(_model_status_value({"status": "UNLOADED"}), "unloaded")
+        self.assertEqual(_model_status_value({"loaded": True}), "loaded")
+        self.assertEqual(_model_status_value({"loaded": False}), "unloaded")
+        self.assertIsNone(_model_status_value({"id": "model"}))
+
+    def test_model_status_parser_detects_failures(self) -> None:
+        self.assertTrue(_model_status_failed({"status": {"failed": True}}))
+        self.assertTrue(_model_status_failed({"status": {"value": "ERROR"}}))
+        self.assertTrue(_model_status_failed({"status": "FAILED"}))
+        self.assertFalse(_model_status_failed({"status": {"value": "loaded"}}))
 
 
 if __name__ == "__main__":
