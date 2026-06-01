@@ -48,6 +48,10 @@ Two budget controls limit the replay cost:
 - `max_session_messages` trims persisted history to recent messages.
 - `max_prompt_chars` trims old history when building a request while preserving
   the system prompt and the current incoming messages.
+- `max_prompt_tokens` trims old history against the active model's tokenizer
+  budget. In `auto` mode the proxy starts with a configurable
+  character-per-token estimate, then uses `llama-server` template/tokenize
+  endpoints only when the estimate indicates trimming is needed.
 
 ## Latency and memory notes
 
