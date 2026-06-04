@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 from typing import Any
+from contextlib import asynccontextmanager
 
 from .config import RuntimeConfig
 from .orchestrator import Orchestrator
@@ -19,34 +18,51 @@ def create_app(config: RuntimeConfig):
         from pydantic import BaseModel, Field
     except ImportError as exc:
         raise RuntimeError("fastapi and pydantic are required to run the HTTP API") from exc
+    try:
+        from pydantic import ConfigDict
+    except ImportError:
+        ConfigDict = None
 
     class SwitchRequest(BaseModel):
         model: str
 
-    class ChatRequest(BaseModel):
-        model: str | None = None
-        messages: list[dict[str, Any]]
-        session_id: str | None = Field(default=None, alias="session_id")
-        temperature: float | None = None
-        top_p: float | None = None
-        max_tokens: int | None = None
-        stream: bool | None = False
+    if ConfigDict is not None:
+        class ChatRequest(BaseModel):
+            model: str | None = None
+            messages: list[dict[str, Any]]
+            session_id: str | None = Field(default=None, alias="session_id")
+            temperature: float | None = None
+            top_p: float | None = None
+            max_tokens: int | None = None
+            stream: bool | None = False
 
-        class Config:
-            populate_by_name = True
-            extra = "allow"
+            model_config = ConfigDict(populate_by_name=True, extra="allow")
+    else:
+        class ChatRequest(BaseModel):
+            model: str | None = None
+            messages: list[dict[str, Any]]
+            session_id: str | None = Field(default=None, alias="session_id")
+            temperature: float | None = None
+            top_p: float | None = None
+            max_tokens: int | None = None
+            stream: bool | None = False
 
-    app = FastAPI(title="HotModelReplacement", version="0.1.0")
+            class Config:
+                populate_by_name = True
+                extra = "allow"
+
     orchestrator = Orchestrator(config)
-    app.state.orchestrator = orchestrator
 
-    @app.on_event("startup")
-    def _startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         orchestrator.start_default()
+        try:
+            yield
+        finally:
+            orchestrator.stop()
 
-    @app.on_event("shutdown")
-    def _shutdown() -> None:
-        orchestrator.stop()
+    app = FastAPI(title="HotModelReplacement", version="0.1.0", lifespan=lifespan)
+    app.state.orchestrator = orchestrator
 
     @app.get("/health")
     def health() -> dict[str, Any]:
