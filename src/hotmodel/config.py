@@ -10,7 +10,7 @@ import tomllib
 class ModelSpec:
     name: str
     path: Path
-    port: int
+    port: int = 0
     host: str = "127.0.0.1"
     binary: str = "llama-server"
     ctx_size: int = 8192
@@ -98,8 +98,8 @@ def load_config(path: str | Path) -> RuntimeConfig:
         model_binary = str(item.get("binary", llama_binary))
         models[name] = ModelSpec(
             name=name,
-            path=Path(str(item["path"])),
-            port=int(item["port"]),
+            path=_resolve_path(config_path, str(item["path"])),
+            port=int(item.get("port", 0)),
             host=model_host,
             binary=model_binary,
             ctx_size=int(item.get("ctx_size", 8192)),
@@ -201,6 +201,10 @@ def _validate(config: RuntimeConfig) -> None:
             raise ValueError("router.parallel must be >= 1")
         if config.router.ctx_size < 1:
             raise ValueError("router.ctx_size must be >= 1")
+    if config.backend_mode == "process":
+        for name, model in config.models.items():
+            if model.port <= 0:
+                raise ValueError(f"model '{name}' must define a positive port for backend_mode='process'")
     if config.active_model and config.active_model not in config.models:
         raise ValueError(f"active_model '{config.active_model}' is not defined")
     if not config.models:

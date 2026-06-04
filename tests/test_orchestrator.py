@@ -340,6 +340,24 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(orchestrator.state()["inflight_chats"], 0)
             self.assertEqual(orchestrator.sessions.get_or_create("s").messages, [])
 
+    def test_unconsumed_stream_close_releases_inflight(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            orchestrator = Orchestrator(
+                _config(tmp_path),
+                sessions=SessionStore(tmp_path / "state.json", "preset"),
+                process_factory=lambda model: FakeProcess(model),
+                chat_backend_factory=lambda base_url: FakeChatBackend(base_url),
+            )
+            orchestrator.switch_model("small")
+
+            stream = orchestrator.chat_stream("s", [{"role": "user", "content": "hi"}], {"stream": True})
+            self.assertEqual(orchestrator.state()["inflight_chats"], 1)
+            stream.close()
+
+            self.assertEqual(orchestrator.state()["inflight_chats"], 0)
+            self.assertEqual(orchestrator.sessions.get_or_create("s").messages, [])
+
     def test_repeated_router_switch_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp_path = Path(raw)

@@ -37,6 +37,68 @@ class PreparedChat:
     budget: BudgetResult
 
 
+class ChatStreamIterator:
+    def __init__(self, orchestrator: Orchestrator, prepared: PreparedChat) -> None:
+        self._orchestrator = orchestrator
+        self._prepared = prepared
+        self._iterator: Iterator[bytes] | None = None
+        self._released = False
+        self._closed = False
+
+    def __iter__(self) -> ChatStreamIterator:
+        return self
+
+    def __next__(self) -> bytes:
+        if self._closed:
+            raise StopIteration
+        if self._iterator is None:
+            self._iterator = self._run()
+        return next(self._iterator)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._iterator is not None:
+            self._iterator.close()
+        else:
+            self._release()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def _run(self) -> Iterator[bytes]:
+        content_parts: list[str] = []
+        completed = False
+        try:
+            backend = self._orchestrator._chat_backend_factory(self._prepared.backend_base_url)
+            for line in backend.chat_completions_stream(self._prepared.payload):
+                content = _extract_stream_content(line)
+                if content:
+                    content_parts.append(content)
+                if _is_done_stream_line(line):
+                    completed = True
+                yield line
+            completed = True
+        finally:
+            if completed:
+                stored_messages = [
+                    message for message in self._prepared.incoming if message.get("role") != "system"
+                ]
+                if content_parts:
+                    stored_messages.append({"role": "assistant", "content": "".join(content_parts)})
+                if stored_messages:
+                    self._orchestrator.sessions.append_messages(self._prepared.session_id, stored_messages)
+            self._closed = True
+            self._release()
+
+    def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._orchestrator._finish_chat()
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -196,30 +258,7 @@ class Orchestrator:
         payload = dict(params)
         payload["stream"] = True
         prepared = self._prepare_chat(session_id, incoming, payload)
-
-        def _stream() -> Iterator[bytes]:
-            content_parts: list[str] = []
-            completed = False
-            try:
-                backend = self._chat_backend_factory(prepared.backend_base_url)
-                for line in backend.chat_completions_stream(prepared.payload):
-                    content = _extract_stream_content(line)
-                    if content:
-                        content_parts.append(content)
-                    if _is_done_stream_line(line):
-                        completed = True
-                    yield line
-                completed = True
-            finally:
-                if completed:
-                    stored_messages = [message for message in prepared.incoming if message.get("role") != "system"]
-                    if content_parts:
-                        stored_messages.append({"role": "assistant", "content": "".join(content_parts)})
-                    if stored_messages:
-                        self.sessions.append_messages(prepared.session_id, stored_messages)
-                self._finish_chat()
-
-        return _stream()
+        return ChatStreamIterator(self, prepared)
 
     def state(self) -> dict[str, Any]:
         with self._lock:
