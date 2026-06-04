@@ -6,6 +6,12 @@ from .config import RuntimeConfig
 from .orchestrator import Orchestrator
 
 
+def dump_request_model(model: Any, exclude: set[str]) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(by_alias=True, exclude=exclude)
+    return model.dict(by_alias=True, exclude=exclude)
+
+
 def create_app(config: RuntimeConfig):
     try:
         from fastapi import FastAPI, Header, HTTPException
@@ -79,7 +85,7 @@ def create_app(config: RuntimeConfig):
 
     @app.post("/v1/chat/completions")
     def chat(request: ChatRequest, x_hotmodel_session: str | None = Header(default=None)) -> Any:
-        payload = request.model_dump(by_alias=True, exclude={"messages", "session_id"})
+        payload = dump_request_model(request, exclude={"messages", "session_id"})
         payload = {key: value for key, value in payload.items() if value is not None}
         session_id = request.session_id or x_hotmodel_session
         try:
