@@ -36,7 +36,7 @@ kv_unified = true
 cache_ram_mb = 1024
 cache_idle_slots = true
 flash_attn = "auto"
-no_webui = true
+no_ui = true
 extra_args = ["--metrics"]
 
 [models.qwen3-small]

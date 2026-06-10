@@ -46,7 +46,8 @@ class RouterSpec:
     cache_ram_mb: int | None = 1024
     cache_idle_slots: bool = True
     flash_attn: str | None = "auto"
-    no_webui: bool = True
+    no_ui: bool = True
+    no_webui: bool | None = None
     extra_args: tuple[str, ...] = ()
 
     @property
@@ -140,6 +141,12 @@ def _optional_int(value: Any) -> int | None:
     return int(value)
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
 def _resolve_path(config_path: Path, value: str) -> Path:
     path = Path(value)
     if path.is_absolute():
@@ -170,7 +177,8 @@ def _load_router(config_path: Path, binary: str, host: str, raw: dict[str, Any])
         cache_ram_mb=_optional_int(raw.get("cache_ram_mb", 1024)),
         cache_idle_slots=bool(raw.get("cache_idle_slots", True)),
         flash_attn=str(raw["flash_attn"]) if raw.get("flash_attn") is not None else None,
-        no_webui=bool(raw.get("no_webui", True)),
+        no_ui=bool(raw.get("no_ui", raw.get("no_webui", True))),
+        no_webui=_optional_bool(raw.get("no_webui")),
         extra_args=tuple(str(arg) for arg in raw.get("extra_args", [])),
     )
 

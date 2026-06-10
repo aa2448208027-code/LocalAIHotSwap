@@ -210,8 +210,9 @@ class LlamaRouterProcess:
         args.append("--cache-idle-slots" if self.router.cache_idle_slots else "--no-cache-idle-slots")
         if self.router.flash_attn is not None:
             args.extend(["--flash-attn", self.router.flash_attn])
-        if self.router.no_webui:
-            args.append("--no-webui")
+        disable_ui = self.router.no_ui if self.router.no_webui is None else self.router.no_webui
+        if disable_ui:
+            args.append("--no-ui")
         args.extend(self.router.extra_args)
         return args
 
