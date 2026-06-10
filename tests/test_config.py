@@ -54,6 +54,29 @@ path = "small.gguf"
             with self.assertRaisesRegex(ValueError, "positive port"):
                 load_config(config_path)
 
+    def test_legacy_no_webui_key_is_still_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config_path = Path(raw) / "models.toml"
+            config_path.write_text(
+                """
+[llama]
+backend_mode = "router"
+
+[router]
+models_max = 1
+no_webui = false
+
+[models.small]
+path = "small.gguf"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertIs(config.router.no_ui, False)
+            self.assertIs(config.router.no_webui, False)
+
 
 if __name__ == "__main__":
     unittest.main()

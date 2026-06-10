@@ -21,7 +21,7 @@ class LlamaRouterProcessTests(unittest.TestCase):
                 cache_ram_mb=512,
                 cache_idle_slots=True,
                 flash_attn="auto",
-                no_webui=True,
+                no_ui=True,
                 extra_args=("--metrics",),
             )
         )
@@ -42,7 +42,8 @@ class LlamaRouterProcessTests(unittest.TestCase):
         self.assertIn("--cache-idle-slots", args)
         self.assertIn("--flash-attn", args)
         self.assertIn("auto", args)
-        self.assertIn("--no-webui", args)
+        self.assertIn("--no-ui", args)
+        self.assertNotIn("--no-webui", args)
         self.assertIn("--metrics", args)
 
     def test_model_status_parser_accepts_common_shapes(self) -> None:
